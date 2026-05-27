@@ -13,6 +13,10 @@ node_modules
 # Build output (dist/ committed for shared hosting deployment)
 dist-ssr
 build
+frontend.zip
+dist.zip
+*.zip
+*.exe
 
 # Environment variables
 .env
