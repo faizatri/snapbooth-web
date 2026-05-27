@@ -10,8 +10,7 @@ lerna-debug.log*
 # Dependencies
 node_modules
 
-# Build output
-dist
+# Build output (dist/ committed for shared hosting deployment)
 dist-ssr
 build
 
