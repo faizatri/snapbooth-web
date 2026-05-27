@@ -41,72 +41,133 @@ function loadImg(src: string, crossOrigin?: string): Promise<HTMLImageElement> {
   })
 }
 
+interface StripOptions {
+  bgColor?: string
+  overlayUrl?: string | null
+  eventName?: string
+  guestName?: string
+}
+
 async function buildPhotoStrip(
   photos: CapturedPhoto[],
-  bgColor = '#1a1a1a',
-  overlayUrl?: string | null,
+  options: StripOptions = {},
 ): Promise<Blob> {
+  const { bgColor = '#ffffff', overlayUrl, eventName, guestName } = options
+
   const images = await Promise.all(photos.map(p => loadImg(p.blobUrl)))
 
-  const targetW = 640
+  const photoW = 520
   const aspect = images[0].naturalHeight / images[0].naturalWidth
-  const photoH = Math.round(aspect * targetW)
-  const padding = 32
-  const gap = 14
-  const radius = 10
+  const photoH = Math.round(aspect * photoW)
+  const padH = 28         // horizontal padding
+  const gapV = 16         // gap between photos
+  const headerH = 84      // top section (event name + guest)
+  const footerH = 52      // bottom branding
 
-  const canvasW = targetW + padding * 2
-  const canvasH = photoH * images.length + gap * (images.length - 1) + padding * 2
+  const canvasW = photoW + padH * 2
+  const canvasH = headerH + photoH * images.length + gapV * (images.length + 1) + footerH
 
   const canvas = document.createElement('canvas')
   canvas.width = canvasW
   canvas.height = canvasH
   const ctx = canvas.getContext('2d')!
 
-  // Background
+  // ── Background ────────────────────────────────────────────────────────────
   ctx.fillStyle = bgColor
   ctx.fillRect(0, 0, canvasW, canvasH)
 
-  // Photos with rounded corners
-  for (let i = 0; i < images.length; i++) {
-    const y = padding + i * (photoH + gap)
-    ctx.save()
-    ctx.beginPath()
-    ctx.moveTo(padding + radius, y)
-    ctx.lineTo(padding + targetW - radius, y)
-    ctx.quadraticCurveTo(padding + targetW, y, padding + targetW, y + radius)
-    ctx.lineTo(padding + targetW, y + photoH - radius)
-    ctx.quadraticCurveTo(padding + targetW, y + photoH, padding + targetW - radius, y + photoH)
-    ctx.lineTo(padding + radius, y + photoH)
-    ctx.quadraticCurveTo(padding, y + photoH, padding, y + photoH - radius)
-    ctx.lineTo(padding, y + radius)
-    ctx.quadraticCurveTo(padding, y, padding + radius, y)
-    ctx.closePath()
-    ctx.clip()
-    ctx.drawImage(images[i], padding, y, targetW, photoH)
-    ctx.restore()
+  // Outer border
+  ctx.strokeStyle = 'rgba(0,0,0,0.10)'
+  ctx.lineWidth = 1
+  ctx.strokeRect(0.5, 0.5, canvasW - 1, canvasH - 1)
+
+  // ── Header ────────────────────────────────────────────────────────────────
+  const isDark = isDarkColor(bgColor)
+  const textColor = isDark ? '#ffffff' : '#1a1a1a'
+  const subtextColor = isDark ? 'rgba(255,255,255,0.55)' : '#888888'
+
+  if (eventName) {
+    ctx.textAlign = 'center'
+    ctx.font = `bold 22px Georgia, "Times New Roman", serif`
+    ctx.fillStyle = textColor
+    ctx.fillText(eventName, canvasW / 2, headerH / 2 + (guestName ? 4 : 10))
+
+    if (guestName) {
+      ctx.font = `italic 15px Georgia, "Times New Roman", serif`
+      ctx.fillStyle = subtextColor
+      ctx.fillText(guestName, canvasW / 2, headerH / 2 + 26)
+    }
   }
 
-  // Overlay frame on top of strip
+  // Thin divider below header
+  ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(padH, headerH)
+  ctx.lineTo(canvasW - padH, headerH)
+  ctx.stroke()
+
+  // ── Photos ────────────────────────────────────────────────────────────────
+  for (let i = 0; i < images.length; i++) {
+    const x = padH
+    const y = headerH + gapV + i * (photoH + gapV)
+
+    // Drop shadow
+    ctx.shadowColor = 'rgba(0,0,0,0.18)'
+    ctx.shadowBlur = 10
+    ctx.shadowOffsetX = 0
+    ctx.shadowOffsetY = 3
+    ctx.drawImage(images[i], x, y, photoW, photoH)
+    ctx.shadowColor = 'transparent'
+    ctx.shadowBlur = 0
+
+    // Thin white inner border on photo
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)'
+    ctx.lineWidth = 2
+    ctx.strokeRect(x + 1, y + 1, photoW - 2, photoH - 2)
+  }
+
+  // ── Footer ────────────────────────────────────────────────────────────────
+  const footerY = canvasH - footerH
+
+  // Thin divider above footer
+  ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(padH, footerY)
+  ctx.lineTo(canvasW - padH, footerY)
+  ctx.stroke()
+
+  const dateStr = new Date().toLocaleDateString('id-ID', {
+    day: 'numeric', month: 'long', year: 'numeric',
+  })
+  ctx.textAlign = 'center'
+  ctx.font = `12px system-ui, sans-serif`
+  ctx.fillStyle = subtextColor
+  ctx.fillText(`SnapBooth  ✦  ${dateStr}`, canvasW / 2, footerY + footerH / 2 + 5)
+
+  // ── Overlay frame ─────────────────────────────────────────────────────────
   if (overlayUrl) {
     try {
       const overlay = await loadImg(overlayUrl, 'anonymous')
       ctx.drawImage(overlay, 0, 0, canvasW, canvasH)
     } catch {
-      // overlay failed — continue without it
+      // overlay failed — continue without
     }
   }
 
-  // Branding footer
-  ctx.fillStyle = bgColor
-  ctx.font = 'bold 18px system-ui, sans-serif'
-  ctx.fillStyle = 'rgba(255,255,255,0.3)'
-  ctx.textAlign = 'center'
-  ctx.fillText('SnapBooth', canvasW / 2, canvasH - 10)
-
   return new Promise<Blob>(resolve =>
-    canvas.toBlob(blob => resolve(blob!), 'image/jpeg', 0.92),
+    canvas.toBlob(blob => resolve(blob!), 'image/jpeg', 0.93),
   )
+}
+
+function isDarkColor(hex: string): boolean {
+  const c = hex.replace('#', '')
+  if (c.length < 6) return false
+  const r = parseInt(c.slice(0, 2), 16)
+  const g = parseInt(c.slice(2, 4), 16)
+  const b = parseInt(c.slice(4, 6), 16)
+  return (r * 299 + g * 587 + b * 114) / 1000 < 128
 }
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────
@@ -285,9 +346,12 @@ export default function BoothPage() {
   const buildAndShowStrip = async (photosToStrip: CapturedPhoto[]) => {
     setStep('composing')
     try {
-      const bgColor = template?.background_color ?? '#1a1a1a'
-      const overlay = template?.overlay_url ?? null
-      const blob = await buildPhotoStrip(photosToStrip, bgColor, overlay)
+      const blob = await buildPhotoStrip(photosToStrip, {
+        bgColor: template?.background_color ?? '#ffffff',
+        overlayUrl: template?.overlay_url ?? null,
+        eventName: eventInfo?.name,
+        guestName: guestName.trim() || undefined,
+      })
       const url = URL.createObjectURL(blob)
       setStripBlob(blob)
       setStripUrl(url)
