@@ -28,7 +28,7 @@ export interface StartSessionResult {
 }
 
 interface CompleteOptions {
-  favorite_photo_id?: number
+  selected_photo_ids: number[]
   guest_name?: string
 }
 
@@ -47,7 +47,7 @@ export const uploadPhoto = async (sessionToken: string, blob: Blob): Promise<Pho
 
 export const completeSession = async (
   sessionToken: string,
-  options?: CompleteOptions
+  options: CompleteOptions
 ): Promise<{ share_token: string }> => {
   const { data } = await api.post('/booth/complete-session', {
     session_token: sessionToken,

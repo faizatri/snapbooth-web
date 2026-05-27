@@ -86,14 +86,15 @@ export function useBoothSession(): UseBoothSessionReturn {
     setPhase('completing')
     setError(null)
     try {
-      const result = await boothApi.completeSession(token)
+      const uploadedIds = photos.filter(p => p.photoId).map(p => p.photoId as number)
+      const result = await boothApi.completeSession(token, { selected_photo_ids: uploadedIds })
       return result.share_token
     } catch (err) {
       setPhase('capturing')
       setError('Gagal menyelesaikan sesi. Coba lagi.')
       throw err
     }
-  }, [])
+  }, [photos])
 
   return { phase, photos, error, startSession, addPhoto, removePhoto, completeSession }
 }

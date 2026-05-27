@@ -216,7 +216,7 @@ export default function BoothPage() {
     }
   }
 
-  const doUpload = async (photosToUpload: CapturedPhoto[], favoriteIdx: number) => {
+  const doUpload = async (photosToUpload: CapturedPhoto[], _favoriteIdx: number) => {
     const token = sessionTokenRef.current
     if (!token) return
     setStep('uploading')
@@ -230,7 +230,7 @@ export default function BoothPage() {
         setUploadedCount(i + 1)
       }
       const result = await completeSession(token, {
-        favorite_photo_id: ids[favoriteIdx],
+        selected_photo_ids: ids,
         guest_name: guestName.trim() || undefined,
       })
       photosToUpload.forEach(p => URL.revokeObjectURL(p.blobUrl))
