@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useCamera } from '../hooks/useCamera'
-import { startSession, uploadPhoto, completeSession, type EventInfo } from '../api/booth'
+import {
+  startSession,
+  uploadPhoto,
+  completeSession,
+  type EventInfo,
+  type TemplateInfo,
+} from '../api/booth'
 import { getQR, getWhatsAppLink, sendEmail } from '../api/share'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -12,7 +18,8 @@ type Step =
   | 'guest-name'
   | 'countdown'
   | 'review'
-  | 'gallery'
+  | 'composing'
+  | 'strip-preview'
   | 'uploading'
   | 'done'
   | 'camera-error'
@@ -22,7 +29,87 @@ interface CapturedPhoto {
   blob: Blob
 }
 
-// ─── Small reusable UI helpers ────────────────────────────────────────────────
+// ─── Photo strip builder ──────────────────────────────────────────────────────
+
+function loadImg(src: string, crossOrigin?: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    if (crossOrigin) img.crossOrigin = crossOrigin
+    img.onload = () => resolve(img)
+    img.onerror = reject
+    img.src = src
+  })
+}
+
+async function buildPhotoStrip(
+  photos: CapturedPhoto[],
+  bgColor = '#1a1a1a',
+  overlayUrl?: string | null,
+): Promise<Blob> {
+  const images = await Promise.all(photos.map(p => loadImg(p.blobUrl)))
+
+  const targetW = 640
+  const aspect = images[0].naturalHeight / images[0].naturalWidth
+  const photoH = Math.round(aspect * targetW)
+  const padding = 32
+  const gap = 14
+  const radius = 10
+
+  const canvasW = targetW + padding * 2
+  const canvasH = photoH * images.length + gap * (images.length - 1) + padding * 2
+
+  const canvas = document.createElement('canvas')
+  canvas.width = canvasW
+  canvas.height = canvasH
+  const ctx = canvas.getContext('2d')!
+
+  // Background
+  ctx.fillStyle = bgColor
+  ctx.fillRect(0, 0, canvasW, canvasH)
+
+  // Photos with rounded corners
+  for (let i = 0; i < images.length; i++) {
+    const y = padding + i * (photoH + gap)
+    ctx.save()
+    ctx.beginPath()
+    ctx.moveTo(padding + radius, y)
+    ctx.lineTo(padding + targetW - radius, y)
+    ctx.quadraticCurveTo(padding + targetW, y, padding + targetW, y + radius)
+    ctx.lineTo(padding + targetW, y + photoH - radius)
+    ctx.quadraticCurveTo(padding + targetW, y + photoH, padding + targetW - radius, y + photoH)
+    ctx.lineTo(padding + radius, y + photoH)
+    ctx.quadraticCurveTo(padding, y + photoH, padding, y + photoH - radius)
+    ctx.lineTo(padding, y + radius)
+    ctx.quadraticCurveTo(padding, y, padding + radius, y)
+    ctx.closePath()
+    ctx.clip()
+    ctx.drawImage(images[i], padding, y, targetW, photoH)
+    ctx.restore()
+  }
+
+  // Overlay frame on top of strip
+  if (overlayUrl) {
+    try {
+      const overlay = await loadImg(overlayUrl, 'anonymous')
+      ctx.drawImage(overlay, 0, 0, canvasW, canvasH)
+    } catch {
+      // overlay failed — continue without it
+    }
+  }
+
+  // Branding footer
+  ctx.fillStyle = bgColor
+  ctx.font = 'bold 18px system-ui, sans-serif'
+  ctx.fillStyle = 'rgba(255,255,255,0.3)'
+  ctx.textAlign = 'center'
+  ctx.fillText('SnapBooth', canvasW / 2, canvasH - 10)
+
+  return new Promise<Blob>(resolve =>
+    canvas.toBlob(blob => resolve(blob!), 'image/jpeg', 0.92),
+  )
+}
+
+// ─── UI helpers ───────────────────────────────────────────────────────────────
 
 function Screen({ children, className = '' }: { children: ReactNode; className?: string }) {
   return (
@@ -40,9 +127,7 @@ function Center({ children }: { children: ReactNode }) {
 
 function Spinner({ size = 'md' }: { size?: 'sm' | 'md' | 'lg' }) {
   const s = size === 'sm' ? 'w-5 h-5' : size === 'lg' ? 'w-14 h-14' : 'w-10 h-10'
-  return (
-    <div className={`${s} border-2 border-white border-t-transparent rounded-full animate-spin`} />
-  )
+  return <div className={`${s} border-2 border-white border-t-transparent rounded-full animate-spin`} />
 }
 
 function ProgressDots({ total, done }: { total: number; done: number }) {
@@ -75,68 +160,58 @@ export default function BoothPage() {
   // Session
   const [step, setStep] = useState<Step>('welcome')
   const [eventInfo, setEventInfo] = useState<EventInfo | null>(null)
+  const [template, setTemplate] = useState<TemplateInfo | null>(null)
   const [guestName, setGuestName] = useState('')
+  const [countdownDuration, setCountdownDuration] = useState(3)
   const sessionTokenRef = useRef<string | null>(null)
 
   // Photo capture
   const [photos, setPhotos] = useState<CapturedPhoto[]>([])
   const [currentBlob, setCurrentBlob] = useState<Blob | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  const [selectedIdx, setSelectedIdx] = useState(0)
   const [countdown, setCountdown] = useState(3)
 
-  // Upload / completion
-  const [uploadedCount, setUploadedCount] = useState(0)
+  // Strip
+  const [stripBlob, setStripBlob] = useState<Blob | null>(null)
+  const [stripUrl, setStripUrl] = useState<string | null>(null)
+
+  // Done / share
   const [shareToken, setShareToken] = useState<string | null>(null)
   const [qrUrl, setQrUrl] = useState<string | null>(null)
 
-  // Errors & email share
+  // UI
   const [apiError, setApiError] = useState<string | null>(null)
   const [emailInput, setEmailInput] = useState('')
   const [emailStatus, setEmailStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
 
-  const maxPhotos = eventInfo?.max_photos ?? 1
+  const maxPhotos = eventInfo?.max_photos ?? 4
 
-  const {
-    videoRef,
-    canvasRef,
-    isReady,
-    error: cameraError,
-    startCamera,
-    stopCamera,
-    captureAsync,
-  } = useCamera()
+  const { videoRef, canvasRef, isReady, error: cameraError, startCamera, stopCamera, captureAsync } =
+    useCamera()
 
   // ── Effects ────────────────────────────────────────────────────────────────
 
-  // Start / stop camera based on step
   useEffect(() => {
     if (step === 'countdown') startCamera()
     else stopCamera()
   }, [step, startCamera, stopCamera])
 
-  // Camera permission denied or hardware error
   useEffect(() => {
     if (cameraError && step === 'countdown') setStep('camera-error')
   }, [cameraError, step])
 
-  // Countdown timer — only begins once camera is ready
   useEffect(() => {
     if (step !== 'countdown' || !isReady) return
-    setCountdown(3)
+    setCountdown(countdownDuration)
     const id = setInterval(() => {
       setCountdown(n => {
-        if (n <= 1) {
-          clearInterval(id)
-          return 0
-        }
+        if (n <= 1) { clearInterval(id); return 0 }
         return n - 1
       })
     }, 1000)
     return () => clearInterval(id)
-  }, [step, isReady])
+  }, [step, isReady]) // countdownDuration intentionally omitted — initial value set by handleStart
 
-  // Auto-capture when countdown reaches zero
   useEffect(() => {
     if (countdown !== 0 || step !== 'countdown') return
     captureAsync().then(blob => {
@@ -147,18 +222,13 @@ export default function BoothPage() {
     })
   }, [countdown, step, captureAsync, stopCamera])
 
-  // Object URL for review screen — revoked automatically when blob clears
   useEffect(() => {
-    if (!currentBlob) {
-      setPreviewUrl(null)
-      return
-    }
+    if (!currentBlob) { setPreviewUrl(null); return }
     const url = URL.createObjectURL(currentBlob)
     setPreviewUrl(url)
     return () => URL.revokeObjectURL(url)
   }, [currentBlob])
 
-  // Fetch QR once session is complete
   useEffect(() => {
     if (step !== 'done' || !shareToken) return
     getQR(shareToken).then(setQrUrl).catch(() => {})
@@ -173,10 +243,11 @@ export default function BoothPage() {
     try {
       const result = await startSession(eventSlug)
       sessionTokenRef.current = result.session_token
-      setEventInfo(
-        result.event ?? { id: 0, name: eventSlug, slug: eventSlug, max_photos: 1 }
-      )
-      setCountdown(3)
+      setEventInfo(result.event)
+      setTemplate(result.template ?? null)
+      const cd = result.event.countdown_seconds ?? 3
+      setCountdownDuration(cd)
+      setCountdown(cd)
       setStep('guest-name')
     } catch {
       setApiError('Event tidak ditemukan. Periksa URL booth kamu.')
@@ -185,13 +256,13 @@ export default function BoothPage() {
   }
 
   const handleNameSubmit = () => {
-    setCountdown(3)
+    setCountdown(countdownDuration)
     setStep('countdown')
   }
 
   const handleRetake = () => {
     setCurrentBlob(null)
-    setCountdown(3)
+    setCountdown(countdownDuration)
     setStep('countdown')
   }
 
@@ -204,44 +275,61 @@ export default function BoothPage() {
     setCurrentBlob(null)
 
     if (newPhotos.length >= maxPhotos) {
-      if (maxPhotos > 1) {
-        setSelectedIdx(0)
-        setStep('gallery')
-      } else {
-        doUpload(newPhotos, 0)
-      }
+      void buildAndShowStrip(newPhotos)
     } else {
-      setCountdown(3)
+      setCountdown(countdownDuration)
       setStep('countdown')
     }
   }
 
-  const doUpload = async (photosToUpload: CapturedPhoto[], _favoriteIdx: number) => {
+  const buildAndShowStrip = async (photosToStrip: CapturedPhoto[]) => {
+    setStep('composing')
+    try {
+      const bgColor = template?.background_color ?? '#1a1a1a'
+      const overlay = template?.overlay_url ?? null
+      const blob = await buildPhotoStrip(photosToStrip, bgColor, overlay)
+      const url = URL.createObjectURL(blob)
+      setStripBlob(blob)
+      setStripUrl(url)
+      setStep('strip-preview')
+    } catch {
+      setApiError('Gagal membuat strip foto. Coba lagi.')
+      setStep('review')
+    }
+  }
+
+  const doUpload = async () => {
+    if (!stripBlob) return
     const token = sessionTokenRef.current
     if (!token) return
     setStep('uploading')
-    setUploadedCount(0)
     setApiError(null)
     try {
-      const ids: number[] = []
-      for (let i = 0; i < photosToUpload.length; i++) {
-        const result = await uploadPhoto(token, photosToUpload[i].blob)
-        ids.push(result.id)
-        setUploadedCount(i + 1)
-      }
+      const uploadedPhoto = await uploadPhoto(token, stripBlob)
       const result = await completeSession(token, {
-        selected_photo_ids: ids,
+        selected_photo_ids: [uploadedPhoto.id],
         guest_name: guestName.trim() || undefined,
       })
-      photosToUpload.forEach(p => URL.revokeObjectURL(p.blobUrl))
+      photos.forEach(p => URL.revokeObjectURL(p.blobUrl))
+      if (stripUrl) URL.revokeObjectURL(stripUrl)
       setShareToken(result.share_token)
       setStep('done')
     } catch {
       setApiError('Upload gagal. Coba lagi.')
+      setStep('strip-preview')
     }
   }
 
-  const handleFinishGallery = () => { void doUpload(photos, selectedIdx) }
+  const handleRetakeAll = () => {
+    photos.forEach(p => URL.revokeObjectURL(p.blobUrl))
+    if (stripUrl) URL.revokeObjectURL(stripUrl)
+    setPhotos([])
+    setStripBlob(null)
+    setStripUrl(null)
+    setApiError(null)
+    setCountdown(countdownDuration)
+    setStep('countdown')
+  }
 
   const handleSendEmail = async () => {
     if (!shareToken || !emailInput.trim()) return
@@ -264,36 +352,40 @@ export default function BoothPage() {
 
   const handleRestart = () => {
     photos.forEach(p => URL.revokeObjectURL(p.blobUrl))
+    if (stripUrl) URL.revokeObjectURL(stripUrl)
     sessionTokenRef.current = null
     setStep('welcome')
     setEventInfo(null)
+    setTemplate(null)
     setGuestName('')
     setPhotos([])
     setCurrentBlob(null)
-    setSelectedIdx(0)
     setCountdown(3)
-    setUploadedCount(0)
+    setCountdownDuration(3)
     setShareToken(null)
     setQrUrl(null)
     setApiError(null)
     setEmailInput('')
     setEmailStatus('idle')
+    setStripBlob(null)
+    setStripUrl(null)
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  // 0. Loading (start-session in progress)
-  if (step === 'loading') {
+  if (step === 'loading' || step === 'composing') {
     return (
       <Screen>
         <Center>
           <Spinner size="lg" />
+          {step === 'composing' && (
+            <p className="text-gray-400 text-lg mt-8 animate-pulse">Membuat strip foto...</p>
+          )}
         </Center>
       </Screen>
     )
   }
 
-  // 1. Welcome screen
   if (step === 'welcome') {
     return (
       <Screen>
@@ -304,19 +396,16 @@ export default function BoothPage() {
               {eventInfo?.name ?? eventSlug ?? 'Selamat Datang'}
             </h1>
             <p className="text-gray-500 text-lg mb-14">Siap untuk foto?</p>
-            <button onClick={handleStart} className={BTN_PRIMARY}>
+            <button onClick={() => void handleStart()} className={BTN_PRIMARY}>
               Mulai
             </button>
-            {apiError && (
-              <p className="text-red-400 text-sm mt-5">{apiError}</p>
-            )}
+            {apiError && <p className="text-red-400 text-sm mt-5">{apiError}</p>}
           </div>
         </Center>
       </Screen>
     )
   }
 
-  // 2. Guest name (optional)
   if (step === 'guest-name') {
     return (
       <Screen>
@@ -344,30 +433,28 @@ export default function BoothPage() {
     )
   }
 
-  // 3. Camera countdown (fullscreen camera + overlay)
   if (step === 'countdown') {
     return (
       <Screen className="relative overflow-hidden">
-        {/* Live camera feed */}
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          className="absolute inset-0 w-full h-full object-cover"
-        />
+        <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
         <canvas ref={canvasRef} className="hidden" />
 
-        {/* Dim overlay */}
+        {/* Template frame overlay on camera */}
+        {template?.overlay_url && (
+          <img
+            src={template.overlay_url}
+            alt=""
+            className="absolute inset-0 w-full h-full object-cover pointer-events-none z-10"
+          />
+        )}
+
         <div className="absolute inset-0 bg-black/20" />
 
-        {/* Top: photo progress */}
-        <div className="absolute top-8 inset-x-0 flex justify-center">
+        <div className="absolute top-8 inset-x-0 flex justify-center z-20">
           <ProgressDots total={maxPhotos} done={photos.length} />
         </div>
 
-        {/* Center: countdown number */}
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
           {isReady ? (
             <span
               key={countdown}
@@ -387,8 +474,7 @@ export default function BoothPage() {
           )}
         </div>
 
-        {/* Bottom: photo number label */}
-        <div className="absolute bottom-8 inset-x-0 text-center">
+        <div className="absolute bottom-8 inset-x-0 text-center z-20">
           <p className="text-white/50 text-sm tracking-widest uppercase">
             Foto {photos.length + 1} dari {maxPhotos}
           </p>
@@ -397,7 +483,6 @@ export default function BoothPage() {
     )
   }
 
-  // Camera permission error
   if (step === 'camera-error') {
     return (
       <Screen>
@@ -409,7 +494,7 @@ export default function BoothPage() {
               {cameraError ?? 'Berikan izin akses kamera pada browser, lalu coba lagi.'}
             </p>
             <button
-              onClick={() => { setCountdown(3); setStep('countdown') }}
+              onClick={() => { setCountdown(countdownDuration); setStep('countdown') }}
               className={BTN_PRIMARY}
             >
               Coba Lagi
@@ -423,36 +508,26 @@ export default function BoothPage() {
     )
   }
 
-  // 5. Review captured photo
   if (step === 'review') {
     return (
       <Screen>
-        {/* Full-height photo preview */}
         <div className="flex-1 relative bg-gray-950 overflow-hidden">
           {previewUrl ? (
-            <img
-              src={previewUrl}
-              alt="Foto preview"
-              className="w-full h-full object-cover"
-            />
+            <img src={previewUrl} alt="Foto preview" className="w-full h-full object-cover" />
           ) : (
             <div className="flex items-center justify-center h-full">
               <Spinner size="lg" />
             </div>
           )}
-
-          {/* Photo counter badge */}
           <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/60 backdrop-blur-sm rounded-full px-5 py-2">
             <p className="text-white text-sm tracking-wide">
               Foto {photos.length + 1} dari {maxPhotos}
             </p>
           </div>
         </div>
-
-        {/* Action buttons */}
         <div className="shrink-0 px-6 py-6 flex flex-col gap-3 bg-black">
           <button onClick={handleKeepPhoto} className={BTN_PRIMARY}>
-            {photos.length + 1 < maxPhotos ? 'Simpan & Lanjut →' : 'Simpan ✓'}
+            {photos.length + 1 < maxPhotos ? 'Simpan & Lanjut →' : 'Buat Strip ✓'}
           </button>
           <button onClick={handleRetake} className={BTN_SECONDARY}>
             ↩ Foto Ulang
@@ -462,93 +537,56 @@ export default function BoothPage() {
     )
   }
 
-  // 7. Gallery — select favorite
-  if (step === 'gallery') {
+  if (step === 'strip-preview') {
     return (
       <Screen>
-        <div className="shrink-0 px-6 pt-10 pb-4 text-center">
-          <h2 className="text-3xl font-bold mb-1">Pilih foto favoritmu</h2>
-          <p className="text-gray-500 text-sm">Foto ini akan ditampilkan di halaman share</p>
+        <div className="shrink-0 px-6 pt-8 pb-3 text-center">
+          <p className="text-gray-500 text-xs uppercase tracking-widest mb-1">SnapBooth</p>
+          <h2 className="text-2xl font-bold">Strip Foto Kamu</h2>
+          <p className="text-gray-500 text-sm mt-1">{maxPhotos} foto dalam 1 strip</p>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-4">
-          <div className="grid grid-cols-2 gap-3 max-w-xs mx-auto pb-4">
-            {photos.map((photo, i) => (
-              <button
-                key={photo.blobUrl}
-                onClick={() => setSelectedIdx(i)}
-                className={`relative aspect-square rounded-2xl overflow-hidden border-4 transition-all duration-200 ${
-                  i === selectedIdx
-                    ? 'border-yellow-400 scale-[1.03]'
-                    : 'border-transparent opacity-70'
-                }`}
-              >
-                <img
-                  src={photo.blobUrl}
-                  alt={`Foto ${i + 1}`}
-                  className="w-full h-full object-cover"
-                />
-                {i === selectedIdx && (
-                  <div className="absolute top-2 right-2 w-8 h-8 rounded-full bg-yellow-400 flex items-center justify-center text-black font-bold text-base shadow-lg">
-                    ★
-                  </div>
-                )}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="shrink-0 px-6 py-6 bg-black">
-          {apiError && (
-            <p className="text-red-400 text-sm text-center mb-3">{apiError}</p>
+        <div className="flex-1 overflow-y-auto flex justify-center px-6 py-4">
+          {stripUrl ? (
+            <img
+              src={stripUrl}
+              alt="Photo strip"
+              className="max-w-[260px] w-full rounded-2xl shadow-2xl"
+            />
+          ) : (
+            <div className="flex items-center justify-center flex-1">
+              <Spinner size="lg" />
+            </div>
           )}
-          <button onClick={handleFinishGallery} className={BTN_PRIMARY}>
-            Selesai →
+        </div>
+
+        <div className="shrink-0 px-6 py-6 bg-black flex flex-col gap-3">
+          {apiError && <p className="text-red-400 text-sm text-center">{apiError}</p>}
+          <button onClick={() => void doUpload()} className={BTN_PRIMARY}>
+            Simpan & Bagikan →
+          </button>
+          <button onClick={handleRetakeAll} className={BTN_SECONDARY}>
+            ↩ Ulangi Semua Foto
           </button>
         </div>
       </Screen>
     )
   }
 
-  // Uploading
   if (step === 'uploading') {
     return (
       <Screen>
         <Center>
-          {apiError ? (
-            <div className="text-center w-full max-w-xs">
-              <p className="text-2xl mb-2">⚠️</p>
-              <p className="text-red-400 text-lg font-semibold mb-2">Upload gagal</p>
-              <p className="text-gray-500 text-sm mb-8">{apiError}</p>
-              <button
-                onClick={() => { void doUpload(photos, selectedIdx) }}
-                className={BTN_PRIMARY}
-              >
-                Coba Lagi
-              </button>
-            </div>
-          ) : (
-            <div className="text-center">
-              <Spinner size="lg" />
-              <p className="text-xl font-semibold mt-8 mb-2">Menyimpan foto...</p>
-              <p className="text-gray-500">
-                {uploadedCount} / {maxPhotos}
-              </p>
-              {/* Progress bar */}
-              <div className="w-48 h-1.5 bg-gray-800 rounded-full mt-4 mx-auto overflow-hidden">
-                <div
-                  className="h-full bg-white rounded-full transition-all duration-300"
-                  style={{ width: `${(uploadedCount / maxPhotos) * 100}%` }}
-                />
-              </div>
-            </div>
-          )}
+          <div className="text-center">
+            <Spinner size="lg" />
+            <p className="text-xl font-semibold mt-8 mb-2">Menyimpan strip foto...</p>
+            <p className="text-gray-500 text-sm">Mohon tunggu sebentar</p>
+          </div>
         </Center>
       </Screen>
     )
   }
 
-  // 8. Done — share screen
   if (step === 'done') {
     return (
       <Screen>
@@ -558,18 +596,13 @@ export default function BoothPage() {
               <p className="text-5xl mb-4">🎉</p>
               <h2 className="text-3xl font-bold mb-1">Foto siap!</h2>
               <p className="text-gray-500 text-sm mb-8">
-                Scan QR code untuk menyimpan fotomu
+                Scan QR code untuk menyimpan strip fotomu
               </p>
 
-              {/* QR Code */}
               <div className="flex justify-center mb-8">
                 {qrUrl ? (
                   <div className="bg-white p-5 rounded-3xl shadow-2xl">
-                    <img
-                      src={qrUrl}
-                      alt="QR Code"
-                      className="w-52 h-52 object-contain"
-                    />
+                    <img src={qrUrl} alt="QR Code" className="w-52 h-52 object-contain" />
                   </div>
                 ) : (
                   <div className="w-64 h-64 bg-gray-900 rounded-3xl flex items-center justify-center">
@@ -578,17 +611,15 @@ export default function BoothPage() {
                 )}
               </div>
 
-              {/* Share buttons */}
               <div className="flex flex-col gap-3 mb-6">
                 <button onClick={() => navigate(`/share/${shareToken}`)} className={BTN_PRIMARY}>
                   Lihat Galeri
                 </button>
-                <button onClick={() => { void handleWhatsApp() }} className={BTN_SECONDARY}>
+                <button onClick={() => void handleWhatsApp()} className={BTN_SECONDARY}>
                   WhatsApp
                 </button>
               </div>
 
-              {/* Email form */}
               <div className="border-t border-gray-800 pt-6">
                 {emailStatus === 'sent' ? (
                   <p className="text-green-400 text-sm py-2">✓ Email terkirim!</p>
@@ -616,7 +647,6 @@ export default function BoothPage() {
                 )}
               </div>
 
-              {/* Restart */}
               <button
                 onClick={handleRestart}
                 className="mt-8 text-gray-600 text-sm hover:text-gray-400 transition-colors py-2"

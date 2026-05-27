@@ -5,6 +5,13 @@ export interface EventInfo {
   name: string
   slug: string
   max_photos: number
+  countdown_seconds?: number
+}
+
+export interface TemplateInfo {
+  overlay_url?: string | null
+  background_color?: string | null
+  layout?: string | null
 }
 
 export interface Photo {
@@ -25,6 +32,7 @@ export interface SessionData {
 export interface StartSessionResult {
   session_token: string
   event: EventInfo
+  template?: TemplateInfo | null
 }
 
 interface CompleteOptions {
