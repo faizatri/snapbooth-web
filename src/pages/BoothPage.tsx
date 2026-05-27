@@ -16,6 +16,7 @@ type Step =
   | 'welcome'
   | 'loading'
   | 'guest-name'
+  | 'filter-select'
   | 'countdown'
   | 'review'
   | 'composing'
@@ -27,6 +28,22 @@ type Step =
 interface CapturedPhoto {
   blobUrl: string
   blob: Blob
+}
+
+// ─── Filter definitions ───────────────────────────────────────────────────────
+
+const FILTERS = [
+  { id: 'normal',    label: 'Normal',      css: 'none',                                           emoji: '🌈' },
+  { id: 'grayscale', label: 'Hitam Putih', css: 'grayscale(100%)',                                 emoji: '⚫' },
+  { id: 'sepia',     label: 'Sepia',       css: 'sepia(80%)',                                      emoji: '🟫' },
+  { id: 'vivid',     label: 'Vivid',       css: 'contrast(1.3) saturate(1.5) brightness(1.05)',    emoji: '✨' },
+]
+
+const CANVAS_FILTERS: Record<string, string> = {
+  normal:    'none',
+  grayscale: 'grayscale(100%)',
+  sepia:     'sepia(80%)',
+  vivid:     'contrast(1.3) saturate(1.5) brightness(1.05)',
 }
 
 // ─── Photo strip builder ──────────────────────────────────────────────────────
@@ -41,126 +58,6 @@ function loadImg(src: string, crossOrigin?: string): Promise<HTMLImageElement> {
   })
 }
 
-interface StripOptions {
-  bgColor?: string
-  overlayUrl?: string | null
-  eventName?: string
-  guestName?: string
-}
-
-async function buildPhotoStrip(
-  photos: CapturedPhoto[],
-  options: StripOptions = {},
-): Promise<Blob> {
-  const { bgColor = '#ffffff', overlayUrl, eventName, guestName } = options
-
-  const images = await Promise.all(photos.map(p => loadImg(p.blobUrl)))
-
-  const photoW = 520
-  const aspect = images[0].naturalHeight / images[0].naturalWidth
-  const photoH = Math.round(aspect * photoW)
-  const padH = 28         // horizontal padding
-  const gapV = 16         // gap between photos
-  const headerH = 84      // top section (event name + guest)
-  const footerH = 52      // bottom branding
-
-  const canvasW = photoW + padH * 2
-  const canvasH = headerH + photoH * images.length + gapV * (images.length + 1) + footerH
-
-  const canvas = document.createElement('canvas')
-  canvas.width = canvasW
-  canvas.height = canvasH
-  const ctx = canvas.getContext('2d')!
-
-  // ── Background ────────────────────────────────────────────────────────────
-  ctx.fillStyle = bgColor
-  ctx.fillRect(0, 0, canvasW, canvasH)
-
-  // Outer border
-  ctx.strokeStyle = 'rgba(0,0,0,0.10)'
-  ctx.lineWidth = 1
-  ctx.strokeRect(0.5, 0.5, canvasW - 1, canvasH - 1)
-
-  // ── Header ────────────────────────────────────────────────────────────────
-  const isDark = isDarkColor(bgColor)
-  const textColor = isDark ? '#ffffff' : '#1a1a1a'
-  const subtextColor = isDark ? 'rgba(255,255,255,0.55)' : '#888888'
-
-  if (eventName) {
-    ctx.textAlign = 'center'
-    ctx.font = `bold 22px Georgia, "Times New Roman", serif`
-    ctx.fillStyle = textColor
-    ctx.fillText(eventName, canvasW / 2, headerH / 2 + (guestName ? 4 : 10))
-
-    if (guestName) {
-      ctx.font = `italic 15px Georgia, "Times New Roman", serif`
-      ctx.fillStyle = subtextColor
-      ctx.fillText(guestName, canvasW / 2, headerH / 2 + 26)
-    }
-  }
-
-  // Thin divider below header
-  ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)'
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.moveTo(padH, headerH)
-  ctx.lineTo(canvasW - padH, headerH)
-  ctx.stroke()
-
-  // ── Photos ────────────────────────────────────────────────────────────────
-  for (let i = 0; i < images.length; i++) {
-    const x = padH
-    const y = headerH + gapV + i * (photoH + gapV)
-
-    // Drop shadow
-    ctx.shadowColor = 'rgba(0,0,0,0.18)'
-    ctx.shadowBlur = 10
-    ctx.shadowOffsetX = 0
-    ctx.shadowOffsetY = 3
-    ctx.drawImage(images[i], x, y, photoW, photoH)
-    ctx.shadowColor = 'transparent'
-    ctx.shadowBlur = 0
-
-    // Thin white inner border on photo
-    ctx.strokeStyle = 'rgba(255,255,255,0.6)'
-    ctx.lineWidth = 2
-    ctx.strokeRect(x + 1, y + 1, photoW - 2, photoH - 2)
-  }
-
-  // ── Footer ────────────────────────────────────────────────────────────────
-  const footerY = canvasH - footerH
-
-  // Thin divider above footer
-  ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)'
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.moveTo(padH, footerY)
-  ctx.lineTo(canvasW - padH, footerY)
-  ctx.stroke()
-
-  const dateStr = new Date().toLocaleDateString('id-ID', {
-    day: 'numeric', month: 'long', year: 'numeric',
-  })
-  ctx.textAlign = 'center'
-  ctx.font = `12px system-ui, sans-serif`
-  ctx.fillStyle = subtextColor
-  ctx.fillText(`SnapBooth  ✦  ${dateStr}`, canvasW / 2, footerY + footerH / 2 + 5)
-
-  // ── Overlay frame ─────────────────────────────────────────────────────────
-  if (overlayUrl) {
-    try {
-      const overlay = await loadImg(overlayUrl, 'anonymous')
-      ctx.drawImage(overlay, 0, 0, canvasW, canvasH)
-    } catch {
-      // overlay failed — continue without
-    }
-  }
-
-  return new Promise<Blob>(resolve =>
-    canvas.toBlob(blob => resolve(blob!), 'image/jpeg', 0.93),
-  )
-}
-
 function isDarkColor(hex: string): boolean {
   const c = hex.replace('#', '')
   if (c.length < 6) return false
@@ -168,6 +65,178 @@ function isDarkColor(hex: string): boolean {
   const g = parseInt(c.slice(2, 4), 16)
   const b = parseInt(c.slice(4, 6), 16)
   return (r * 299 + g * 587 + b * 114) / 1000 < 128
+}
+
+interface StripOptions {
+  bgColor?: string
+  overlayUrl?: string | null
+  eventName?: string
+  guestName?: string
+  filter?: string
+  layout?: 'strip' | 'grid'
+}
+
+function drawPhotoWithShadow(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  x: number, y: number, w: number, h: number,
+  filter: string,
+) {
+  if (filter !== 'none') ctx.filter = filter
+  ctx.shadowColor = 'rgba(0,0,0,0.20)'
+  ctx.shadowBlur = 10
+  ctx.shadowOffsetY = 3
+  ctx.drawImage(img, x, y, w, h)
+  ctx.filter = 'none'
+  ctx.shadowColor = 'transparent'
+  ctx.shadowBlur = 0
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)'
+  ctx.lineWidth = 2
+  ctx.strokeRect(x + 1, y + 1, w - 2, h - 2)
+}
+
+function drawHeader(
+  ctx: CanvasRenderingContext2D,
+  canvasW: number, headerH: number,
+  eventName: string | undefined, guestName: string | undefined,
+  textColor: string, subtextColor: string, dividerColor: string,
+  padH: number,
+) {
+  if (eventName) {
+    ctx.textAlign = 'center'
+    ctx.font = `bold 22px Georgia, "Times New Roman", serif`
+    ctx.fillStyle = textColor
+    ctx.fillText(eventName, canvasW / 2, headerH / 2 + (guestName ? 4 : 10))
+    if (guestName) {
+      ctx.font = `italic 15px Georgia, "Times New Roman", serif`
+      ctx.fillStyle = subtextColor
+      ctx.fillText(guestName, canvasW / 2, headerH / 2 + 26)
+    }
+  }
+  ctx.strokeStyle = dividerColor
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(padH, headerH)
+  ctx.lineTo(canvasW - padH, headerH)
+  ctx.stroke()
+}
+
+function drawFooter(
+  ctx: CanvasRenderingContext2D,
+  canvasW: number, canvasH: number, footerH: number,
+  subtextColor: string, dividerColor: string, padH: number,
+) {
+  const footerY = canvasH - footerH
+  ctx.strokeStyle = dividerColor
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(padH, footerY)
+  ctx.lineTo(canvasW - padH, footerY)
+  ctx.stroke()
+  const dateStr = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })
+  ctx.textAlign = 'center'
+  ctx.font = '12px system-ui, sans-serif'
+  ctx.fillStyle = subtextColor
+  ctx.fillText(`SnapBooth  ✦  ${dateStr}`, canvasW / 2, footerY + footerH / 2 + 5)
+}
+
+async function buildPhotoStrip(
+  photos: CapturedPhoto[],
+  options: StripOptions = {},
+): Promise<Blob> {
+  const {
+    bgColor = '#ffffff',
+    overlayUrl,
+    eventName,
+    guestName,
+    filter = 'normal',
+    layout = 'strip',
+  } = options
+
+  const images = await Promise.all(photos.map(p => loadImg(p.blobUrl)))
+  const canvasFilter = CANVAS_FILTERS[filter] ?? 'none'
+  const isDark = isDarkColor(bgColor)
+  const textColor = isDark ? '#ffffff' : '#1a1a1a'
+  const subtextColor = isDark ? 'rgba(255,255,255,0.50)' : '#888888'
+  const dividerColor = isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)'
+
+  const padH = 28
+  const headerH = 84
+  const footerH = 52
+
+  const use2x2 = layout === 'grid' && images.length === 4
+
+  // ── Canvas setup ──────────────────────────────────────────────────────────
+
+  let canvasW: number, canvasH: number
+  let photoW: number, photoH: number
+  let gapGrid = 12
+
+  if (use2x2) {
+    const totalInnerW = 560
+    canvasW = totalInnerW
+    photoW = Math.floor((totalInnerW - padH * 2 - gapGrid) / 2)
+    photoH = Math.round((images[0].naturalHeight / images[0].naturalWidth) * photoW)
+    canvasH = headerH + photoH * 2 + gapGrid + 16 * 3 + footerH
+  } else {
+    photoW = 520
+    photoH = Math.round((images[0].naturalHeight / images[0].naturalWidth) * photoW)
+    canvasW = photoW + padH * 2
+    canvasH = headerH + photoH * images.length + 16 * (images.length + 1) + footerH
+  }
+
+  const canvas = document.createElement('canvas')
+  canvas.width = canvasW
+  canvas.height = canvasH
+  const ctx = canvas.getContext('2d')!
+
+  // Background + border
+  ctx.fillStyle = bgColor
+  ctx.fillRect(0, 0, canvasW, canvasH)
+  ctx.strokeStyle = 'rgba(0,0,0,0.10)'
+  ctx.lineWidth = 1
+  ctx.strokeRect(0.5, 0.5, canvasW - 1, canvasH - 1)
+
+  // Header
+  drawHeader(ctx, canvasW, headerH, eventName, guestName, textColor, subtextColor, dividerColor, padH)
+
+  // ── Photos ────────────────────────────────────────────────────────────────
+
+  if (use2x2) {
+    // 2×2 grid
+    const gapV = 16
+    const positions: [number, number][] = [
+      [padH, headerH + gapV],
+      [padH + photoW + gapGrid, headerH + gapV],
+      [padH, headerH + gapV + photoH + gapGrid],
+      [padH + photoW + gapGrid, headerH + gapV + photoH + gapGrid],
+    ]
+    for (let i = 0; i < Math.min(images.length, 4); i++) {
+      const [x, y] = positions[i]
+      drawPhotoWithShadow(ctx, images[i], x, y, photoW, photoH, canvasFilter)
+    }
+  } else {
+    // Vertical strip
+    const gapV = 16
+    for (let i = 0; i < images.length; i++) {
+      const x = padH
+      const y = headerH + gapV + i * (photoH + gapV)
+      drawPhotoWithShadow(ctx, images[i], x, y, photoW, photoH, canvasFilter)
+    }
+  }
+
+  // Footer
+  drawFooter(ctx, canvasW, canvasH, footerH, subtextColor, dividerColor, padH)
+
+  // Overlay frame
+  if (overlayUrl) {
+    try {
+      const overlay = await loadImg(overlayUrl, 'anonymous')
+      ctx.drawImage(overlay, 0, 0, canvasW, canvasH)
+    } catch { /* skip */ }
+  }
+
+  return new Promise<Blob>(resolve => canvas.toBlob(blob => resolve(blob!), 'image/jpeg', 0.93))
 }
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────
@@ -181,9 +250,7 @@ function Screen({ children, className = '' }: { children: ReactNode; className?:
 }
 
 function Center({ children }: { children: ReactNode }) {
-  return (
-    <div className="flex-1 flex flex-col items-center justify-center px-6">{children}</div>
-  )
+  return <div className="flex-1 flex flex-col items-center justify-center px-6">{children}</div>
 }
 
 function Spinner({ size = 'md' }: { size?: 'sm' | 'md' | 'lg' }) {
@@ -196,12 +263,7 @@ function ProgressDots({ total, done }: { total: number; done: number }) {
   return (
     <div className="flex gap-2.5 justify-center">
       {Array.from({ length: total }).map((_, i) => (
-        <div
-          key={i}
-          className={`w-3 h-3 rounded-full transition-all ${
-            i < done ? 'bg-white scale-110' : 'bg-white/25'
-          }`}
-        />
+        <div key={i} className={`w-3 h-3 rounded-full transition-all ${i < done ? 'bg-white scale-110' : 'bg-white/25'}`} />
       ))}
     </div>
   )
@@ -211,6 +273,8 @@ const BTN_PRIMARY =
   'w-full font-bold text-xl py-5 rounded-2xl active:scale-[0.97] transition-all disabled:opacity-40 bg-white text-black hover:bg-gray-100'
 const BTN_SECONDARY =
   'w-full font-semibold text-lg py-4 rounded-2xl active:scale-[0.97] transition-all border-2 border-gray-700 text-white hover:border-gray-500'
+
+const KIOSK_DURATION = 15
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
@@ -232,7 +296,17 @@ export default function BoothPage() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [countdown, setCountdown] = useState(3)
 
-  // Strip
+  // Filter (feature 3)
+  const [selectedFilter, setSelectedFilter] = useState('normal')
+
+  // Strip layout (feature 1)
+  const [stripLayout, setStripLayout] = useState<'strip' | 'grid'>('strip')
+
+  // Kiosk mode (feature 2)
+  const [kioskMode, setKioskMode] = useState(false)
+  const [kioskCountdown, setKioskCountdown] = useState(KIOSK_DURATION)
+
+  // Strip output
   const [stripBlob, setStripBlob] = useState<Blob | null>(null)
   const [stripUrl, setStripUrl] = useState<string | null>(null)
 
@@ -252,15 +326,17 @@ export default function BoothPage() {
 
   // ── Effects ────────────────────────────────────────────────────────────────
 
+  // Camera: on during filter preview AND countdown
   useEffect(() => {
-    if (step === 'countdown') startCamera()
+    if (step === 'filter-select' || step === 'countdown') startCamera()
     else stopCamera()
   }, [step, startCamera, stopCamera])
 
   useEffect(() => {
-    if (cameraError && step === 'countdown') setStep('camera-error')
+    if (cameraError && (step === 'countdown' || step === 'filter-select')) setStep('camera-error')
   }, [cameraError, step])
 
+  // Countdown timer
   useEffect(() => {
     if (step !== 'countdown' || !isReady) return
     setCountdown(countdownDuration)
@@ -271,8 +347,9 @@ export default function BoothPage() {
       })
     }, 1000)
     return () => clearInterval(id)
-  }, [step, isReady]) // countdownDuration intentionally omitted — initial value set by handleStart
+  }, [step, isReady])
 
+  // Auto-capture when countdown hits 0
   useEffect(() => {
     if (countdown !== 0 || step !== 'countdown') return
     captureAsync().then(blob => {
@@ -283,6 +360,7 @@ export default function BoothPage() {
     })
   }, [countdown, step, captureAsync, stopCamera])
 
+  // Preview URL for review screen
   useEffect(() => {
     if (!currentBlob) { setPreviewUrl(null); return }
     const url = URL.createObjectURL(currentBlob)
@@ -290,10 +368,24 @@ export default function BoothPage() {
     return () => URL.revokeObjectURL(url)
   }, [currentBlob])
 
+  // QR code when done
   useEffect(() => {
     if (step !== 'done' || !shareToken) return
     getQR(shareToken).then(setQrUrl).catch(() => {})
   }, [step, shareToken])
+
+  // Kiosk auto-restart countdown
+  useEffect(() => {
+    if (step !== 'done' || !kioskMode) return
+    setKioskCountdown(KIOSK_DURATION)
+    const id = setInterval(() => {
+      setKioskCountdown(n => {
+        if (n <= 1) { clearInterval(id); handleRestart(); return 0 }
+        return n - 1
+      })
+    }, 1000)
+    return () => clearInterval(id)
+  }, [step, kioskMode])
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
@@ -309,6 +401,11 @@ export default function BoothPage() {
       const cd = result.event.countdown_seconds ?? 3
       setCountdownDuration(cd)
       setCountdown(cd)
+      // Layout: 'grid' if template says so and max_photos === 4
+      setStripLayout(result.template?.layout === 'grid' ? 'grid' : 'strip')
+      // Kiosk mode from event_config (accessed via event.kiosk_mode if backend returns it)
+      const cfg = (result as unknown as { event_config?: Record<string, unknown> }).event_config ?? {}
+      setKioskMode(Boolean(cfg.kiosk_mode))
       setStep('guest-name')
     } catch {
       setApiError('Event tidak ditemukan. Periksa URL booth kamu.')
@@ -317,6 +414,10 @@ export default function BoothPage() {
   }
 
   const handleNameSubmit = () => {
+    setStep('filter-select')
+  }
+
+  const handleFilterNext = () => {
     setCountdown(countdownDuration)
     setStep('countdown')
   }
@@ -351,6 +452,8 @@ export default function BoothPage() {
         overlayUrl: template?.overlay_url ?? null,
         eventName: eventInfo?.name,
         guestName: guestName.trim() || undefined,
+        filter: selectedFilter,
+        layout: stripLayout,
       })
       const url = URL.createObjectURL(blob)
       setStripBlob(blob)
@@ -401,9 +504,7 @@ export default function BoothPage() {
     try {
       await sendEmail(shareToken, emailInput.trim())
       setEmailStatus('sent')
-    } catch {
-      setEmailStatus('error')
-    }
+    } catch { setEmailStatus('error') }
   }
 
   const handleWhatsApp = async () => {
@@ -426,6 +527,8 @@ export default function BoothPage() {
     setCurrentBlob(null)
     setCountdown(3)
     setCountdownDuration(3)
+    setSelectedFilter('normal')
+    setStripLayout('strip')
     setShareToken(null)
     setQrUrl(null)
     setApiError(null)
@@ -433,7 +536,10 @@ export default function BoothPage() {
     setEmailStatus('idle')
     setStripBlob(null)
     setStripUrl(null)
+    setKioskCountdown(KIOSK_DURATION)
   }
+
+  const activeCss = FILTERS.find(f => f.id === selectedFilter)?.css ?? 'none'
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -460,9 +566,7 @@ export default function BoothPage() {
               {eventInfo?.name ?? eventSlug ?? 'Selamat Datang'}
             </h1>
             <p className="text-gray-500 text-lg mb-14">Siap untuk foto?</p>
-            <button onClick={() => void handleStart()} className={BTN_PRIMARY}>
-              Mulai
-            </button>
+            <button onClick={() => void handleStart()} className={BTN_PRIMARY}>Mulai</button>
             {apiError && <p className="text-red-400 text-sm mt-5">{apiError}</p>}
           </div>
         </Center>
@@ -497,13 +601,73 @@ export default function BoothPage() {
     )
   }
 
+  // ── Filter select (FEATURE 3) ─────────────────────────────────────────────
+  if (step === 'filter-select') {
+    return (
+      <Screen className="relative overflow-hidden">
+        {/* Live camera with selected filter */}
+        <video
+          ref={videoRef}
+          autoPlay playsInline muted
+          className="absolute inset-0 w-full h-full object-cover transition-all"
+          style={{ filter: activeCss }}
+        />
+        <canvas ref={canvasRef} className="hidden" />
+
+        {/* Template overlay preview */}
+        {template?.overlay_url && (
+          <img
+            src={template.overlay_url}
+            alt=""
+            className="absolute inset-0 w-full h-full object-cover pointer-events-none z-10"
+          />
+        )}
+
+        {/* Gradient overlay so buttons are readable */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
+
+        {/* Filter picker + button */}
+        <div className="absolute bottom-0 inset-x-0 z-20 px-5 pb-8 pt-4">
+          <p className="text-center text-xs text-white/60 uppercase tracking-widest mb-4">
+            Pilih Filter
+          </p>
+
+          <div className="grid grid-cols-4 gap-3 mb-6">
+            {FILTERS.map(f => (
+              <button
+                key={f.id}
+                onClick={() => setSelectedFilter(f.id)}
+                className={`flex flex-col items-center gap-1.5 py-3 rounded-2xl transition-all text-sm font-semibold ${
+                  selectedFilter === f.id
+                    ? 'bg-white text-black scale-105 shadow-lg'
+                    : 'bg-white/10 text-white hover:bg-white/20'
+                }`}
+              >
+                <span className="text-2xl leading-none">{f.emoji}</span>
+                <span className="text-xs">{f.label}</span>
+              </button>
+            ))}
+          </div>
+
+          <button onClick={handleFilterNext} className={BTN_PRIMARY}>
+            Mulai Foto →
+          </button>
+        </div>
+      </Screen>
+    )
+  }
+
   if (step === 'countdown') {
     return (
       <Screen className="relative overflow-hidden">
-        <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
+        <video
+          ref={videoRef}
+          autoPlay playsInline muted
+          className="absolute inset-0 w-full h-full object-cover"
+          style={{ filter: activeCss }}
+        />
         <canvas ref={canvasRef} className="hidden" />
 
-        {/* Template frame overlay on camera */}
         {template?.overlay_url && (
           <img
             src={template.overlay_url}
@@ -577,11 +741,14 @@ export default function BoothPage() {
       <Screen>
         <div className="flex-1 relative bg-gray-950 overflow-hidden">
           {previewUrl ? (
-            <img src={previewUrl} alt="Foto preview" className="w-full h-full object-cover" />
+            <img
+              src={previewUrl}
+              alt="Foto preview"
+              className="w-full h-full object-cover"
+              style={{ filter: activeCss }}
+            />
           ) : (
-            <div className="flex items-center justify-center h-full">
-              <Spinner size="lg" />
-            </div>
+            <div className="flex items-center justify-center h-full"><Spinner size="lg" /></div>
           )}
           <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/60 backdrop-blur-sm rounded-full px-5 py-2">
             <p className="text-white text-sm tracking-wide">
@@ -593,9 +760,7 @@ export default function BoothPage() {
           <button onClick={handleKeepPhoto} className={BTN_PRIMARY}>
             {photos.length + 1 < maxPhotos ? 'Simpan & Lanjut →' : 'Buat Strip ✓'}
           </button>
-          <button onClick={handleRetake} className={BTN_SECONDARY}>
-            ↩ Foto Ulang
-          </button>
+          <button onClick={handleRetake} className={BTN_SECONDARY}>↩ Foto Ulang</button>
         </div>
       </Screen>
     )
@@ -607,31 +772,23 @@ export default function BoothPage() {
         <div className="shrink-0 px-6 pt-8 pb-3 text-center">
           <p className="text-gray-500 text-xs uppercase tracking-widest mb-1">SnapBooth</p>
           <h2 className="text-2xl font-bold">Strip Foto Kamu</h2>
-          <p className="text-gray-500 text-sm mt-1">{maxPhotos} foto dalam 1 strip</p>
+          <p className="text-gray-500 text-sm mt-1">
+            {stripLayout === 'grid' ? '2×2 grid' : `${maxPhotos} foto strip`}  ·  filter {FILTERS.find(f => f.id === selectedFilter)?.label}
+          </p>
         </div>
 
         <div className="flex-1 overflow-y-auto flex justify-center px-6 py-4">
           {stripUrl ? (
-            <img
-              src={stripUrl}
-              alt="Photo strip"
-              className="max-w-[260px] w-full rounded-2xl shadow-2xl"
-            />
+            <img src={stripUrl} alt="Photo strip" className="max-w-[260px] w-full rounded-2xl shadow-2xl" />
           ) : (
-            <div className="flex items-center justify-center flex-1">
-              <Spinner size="lg" />
-            </div>
+            <div className="flex items-center justify-center flex-1"><Spinner size="lg" /></div>
           )}
         </div>
 
         <div className="shrink-0 px-6 py-6 bg-black flex flex-col gap-3">
           {apiError && <p className="text-red-400 text-sm text-center">{apiError}</p>}
-          <button onClick={() => void doUpload()} className={BTN_PRIMARY}>
-            Simpan & Bagikan →
-          </button>
-          <button onClick={handleRetakeAll} className={BTN_SECONDARY}>
-            ↩ Ulangi Semua Foto
-          </button>
+          <button onClick={() => void doUpload()} className={BTN_PRIMARY}>Simpan & Bagikan →</button>
+          <button onClick={handleRetakeAll} className={BTN_SECONDARY}>↩ Ulangi Semua Foto</button>
         </div>
       </Screen>
     )
@@ -711,12 +868,27 @@ export default function BoothPage() {
                 )}
               </div>
 
-              <button
-                onClick={handleRestart}
-                className="mt-8 text-gray-600 text-sm hover:text-gray-400 transition-colors py-2"
-              >
-                ↩ Mulai Lagi
-              </button>
+              {/* Kiosk auto-restart (FEATURE 2) */}
+              {kioskMode ? (
+                <div className="mt-8 text-center">
+                  <p className="text-gray-500 text-sm mb-2">
+                    Sesi baru dalam <span className="text-white font-bold">{kioskCountdown}</span> detik
+                  </p>
+                  <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden w-full mb-4">
+                    <div
+                      className="h-full bg-white rounded-full transition-all duration-1000"
+                      style={{ width: `${(kioskCountdown / KIOSK_DURATION) * 100}%` }}
+                    />
+                  </div>
+                  <button onClick={handleRestart} className="text-sm text-white/60 hover:text-white transition-colors">
+                    Mulai Sekarang →
+                  </button>
+                </div>
+              ) : (
+                <button onClick={handleRestart} className="mt-8 text-gray-600 text-sm hover:text-gray-400 transition-colors py-2">
+                  ↩ Mulai Lagi
+                </button>
+              )}
             </div>
           </Center>
         </div>
@@ -724,11 +896,5 @@ export default function BoothPage() {
     )
   }
 
-  return (
-    <Screen>
-      <Center>
-        <Spinner size="lg" />
-      </Center>
-    </Screen>
-  )
+  return <Screen><Center><Spinner size="lg" /></Center></Screen>
 }
