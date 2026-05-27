@@ -41,7 +41,7 @@ function PhotoCard({ photo, isFavorite, onDownload, onClick }: PhotoCardProps) {
         <div className="absolute inset-0 bg-gray-800 animate-pulse" />
       )}
       <img
-        src={photo.thumbnail_url ?? photo.url}
+        src={photo.thumbnail_url ?? photo.processed_url}
         alt="Foto"
         className={`w-full h-full object-cover cursor-pointer transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}
         onLoad={() => setLoaded(true)}
@@ -89,7 +89,7 @@ function Lightbox({ photo, onClose, onDownload }: LightboxProps) {
         ×
       </button>
       <img
-        src={photo.url}
+        src={photo.processed_url}
         alt="Foto fullscreen"
         className="max-w-full max-h-[78vh] rounded-2xl object-contain shadow-2xl"
         onClick={e => e.stopPropagation()}
@@ -135,7 +135,7 @@ export default function SharePage() {
       const url = await getDownloadUrl(photo.id)
       await downloadFile(url, `snapbooth-${photo.id}.jpg`)
     } catch {
-      window.open(photo.url, '_blank')
+      window.open(photo.processed_url, '_blank')
     } finally {
       setDownloadingId(null)
     }

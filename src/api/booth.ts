@@ -9,7 +9,7 @@ export interface EventInfo {
 
 export interface Photo {
   id: number
-  url: string
+  processed_url: string
   thumbnail_url?: string
 }
 
